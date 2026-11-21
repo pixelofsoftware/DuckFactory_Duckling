@@ -1,5 +1,7 @@
 # DuckFactory - symulator fabryki w Ducklingu
 
+![Napisane w Duckling](https://img.shields.io/badge/napisane%20w-Duckling-f2c94c)
+
 Zespół: Pixel of Software (Marcin Kowalczyk). Temat: P03 DuckFactory. Skład: 1 osoba.
 
 Program symuluje fabrykę krok po kroku. Fabryka to maszyny, które przerabiają surowce według receptur, magazyny i źródła surowców, a stałe połączenia przewożą między nimi zasoby. Program porównuje dwa układy realizujące to samo zamówienie przy tych samych zapasach początkowych: który jest szybszy i co go ogranicza.
