@@ -1,0 +1,189 @@
+# Testy DuckFactory: build.py podstawia ten plik w miejsce app/app.dk.
+# Liczby krokow i statystyki pochodza z niezaleznego modelu narzedzia/model_referencyjny.py.
+import core.containers.*;
+import tekst;
+import model;
+import konfiguracja;
+import symulacja;
+import raport;
+import sesja;
+
+let UKLAD_A = "# Uklad A: linia szeregowa - po jednej maszynie kazdego rodzaju.\n# Jednostka czasu: 1 krok = 1 minuta.\nreceptura WYTAPIANIE piec 3 ruda:2 -> metal:1\nreceptura CIECIE krajarka 2 metal:1 -> plytka:1\nreceptura MONTAZ montownia 4 plytka:2 -> modul:1\n\nmagazyn MAG_WE bez_limitu\nmagazyn MAG_WY bez_limitu\nmaszyna PIEC1 piec WYTAPIANIE\nmaszyna KRAJARKA1 krajarka CIECIE\nmaszyna MONTAZ1 montownia MONTAZ\n\npolaczenie MAG_WE PIEC1 ruda 2 1\npolaczenie PIEC1 KRAJARKA1 metal 1 1\npolaczenie KRAJARKA1 MONTAZ1 plytka 2 1\npolaczenie MONTAZ1 MAG_WY modul 1 1\n\nzapas MAG_WE ruda 24\nzamowienie modul 6 MAG_WY\n";
+let UKLAD_B = "# Uklad B: dwa piece rownolegle zasilaja jedna krajarke.\n# Te same receptury, ten sam zapas rudy i to samo zamowienie co w ukladzie A.\nreceptura WYTAPIANIE piec 3 ruda:2 -> metal:1\nreceptura CIECIE krajarka 2 metal:1 -> plytka:1\nreceptura MONTAZ montownia 4 plytka:2 -> modul:1\n\nmagazyn MAG_WE bez_limitu\nmagazyn MAG_WY bez_limitu\nmaszyna PIEC1 piec WYTAPIANIE\nmaszyna PIEC2 piec WYTAPIANIE\nmaszyna KRAJARKA1 krajarka CIECIE\nmaszyna MONTAZ1 montownia MONTAZ\n\npolaczenie MAG_WE PIEC1 ruda 2 1\npolaczenie MAG_WE PIEC2 ruda 2 1\npolaczenie PIEC1 KRAJARKA1 metal 1 1\npolaczenie PIEC2 KRAJARKA1 metal 1 1\npolaczenie KRAJARKA1 MONTAZ1 plytka 2 1\npolaczenie MONTAZ1 MAG_WY modul 1 1\n\nzapas MAG_WE ruda 24\nzamowienie modul 6 MAG_WY\n";
+let UKLAD_KARTY = "# Przyklad z karty P03: z 12 jednostek rudy powstana najwyzej 3 moduly.\n# Zamowienie na 4 moduly nie moze sie udac - program pokazuje, gdzie stanela produkcja.\nreceptura WYTAPIANIE piec 3 ruda:2 -> metal:1\nreceptura CIECIE krajarka 2 metal:1 -> plytka:1\nreceptura MONTAZ montownia 4 plytka:2 -> modul:1\n\nmagazyn MAG_WE bez_limitu\nmagazyn MAG_WY bez_limitu\nmaszyna PIEC1 piec WYTAPIANIE\nmaszyna KRAJARKA1 krajarka CIECIE\nmaszyna MONTAZ1 montownia MONTAZ\n\npolaczenie MAG_WE PIEC1 ruda 2 1\npolaczenie PIEC1 KRAJARKA1 metal 1 1\npolaczenie KRAJARKA1 MONTAZ1 plytka 2 1\npolaczenie MONTAZ1 MAG_WY modul 1 1\n\nzapas MAG_WE ruda 12\nzamowienie modul 4 MAG_WY\n";
+let UKLAD_KOPALNI = "# Uklad ze zrodlem: kopalnia wydobywa 1 jednostke rudy na krok, lacznie najwyzej 16.\n# Magazyn posredni ma ograniczona pojemnosc (6 sztuk), a transport rudy trwa 2 kroki.\nreceptura WYTAPIANIE piec 3 ruda:2 -> metal:1\nreceptura CIECIE krajarka 2 metal:1 -> plytka:1\nreceptura MONTAZ montownia 4 plytka:2 -> modul:1\n\nzrodlo KOPALNIA ruda 1 16\nmagazyn SKLAD 6\nmagazyn MAG_WY bez_limitu\nmaszyna PIEC1 piec WYTAPIANIE\nmaszyna KRAJARKA1 krajarka CIECIE\nmaszyna MONTAZ1 montownia MONTAZ\n\npolaczenie KOPALNIA SKLAD ruda 2 2\npolaczenie SKLAD PIEC1 ruda 2 1\npolaczenie PIEC1 KRAJARKA1 metal 1 1\npolaczenie KRAJARKA1 MONTAZ1 plytka 2 1\npolaczenie MONTAZ1 MAG_WY modul 1 1\n\nzamowienie modul 4 MAG_WY\n";
+
+fun sprawdz(warunek: bool, nazwa: str) -> i64 = {
+    if (warunek) {
+        print(f"PASS {nazwa}\n");
+        return 0;
+    }
+    print(f"FAIL {nazwa}\n");
+    return 1;
+}
+
+fun zawiera(calosc: str, fragment: str) -> bool = {
+    var i: i64 = 0;
+    while (i + fragment.length() <= calosc.length()) {
+        if (tekst.rowne(tekst.wytnij(calosc, i, fragment.length()).asSlice(), fragment)) return true;
+        i += 1;
+    }
+    return false;
+}
+
+fun fabryka(zawartosc: str) -> model.Fabryka = {
+    var w = konfiguracja.wczytaj(zawartosc);
+    return copy w.fabryka;
+}
+
+fun maszyna(f: ref model.Fabryka, nazwa: str, cykle: i64, praca: i64, glod: i64, blokada: i64) -> bool = {
+    let e = model.indeksElementu(f, nazwa);
+    if (e < 0) return false;
+    return f.elementy.at(e).cykle == cykle and f.elementy.at(e).praca == praca and f.elementy.at(e).glod == glod
+        and f.elementy.at(e).blokada == blokada;
+}
+
+fun wMagazynie(f: ref model.Fabryka, magazyn: str, zasob: str) -> i64 = {
+    return f.elementy.at(model.indeksElementu(f, magazyn)).wyjscie.at(model.indeksZasobu(f, zasob));
+}
+
+# Bilans: zapas + wyprodukowane = wszystkie sztuki (magazyny, bufory, w drodze) + zużyte.
+fun bilans(f: ref model.Fabryka) -> bool = {
+    var z: i64 = 0;
+    while (z < f.zasoby.length()) {
+        let lewa = f.zapasStart.at(z) + symulacja.wyprodukowano(f, z);
+        let prawa = symulacja.wszystkieSztuki(f, z) + symulacja.zuzyto(f, z);
+        if (lewa != prawa) return false;
+        z += 1;
+    }
+    return true;
+}
+
+fun testyKonfiguracji() -> i64 = {
+    var b: i64 = 0;
+    var a = konfiguracja.wczytaj(UKLAD_A);
+    b += sprawdz(a.ok and a.fabryka.receptury.length() == 3 and a.fabryka.elementy.length() == 5 and a.fabryka.polaczenia.length() == 4, "uklad A: 3 receptury, 5 elementow, 4 polaczenia");
+    b += sprawdz(a.ok and a.fabryka.zasoby.length() == 4 and a.fabryka.zapasStart.at(model.indeksZasobu(&a.fabryka, "ruda")) == 24, "4 zasoby (ruda, metal, plytka, modul), zapas 24 rudy");
+    var kolejnosc = konfiguracja.wczytaj("zamowienie b 1 M\npolaczenie M X a 1 1\nmaszyna X t R\nmagazyn M bez_limitu\nreceptura R t 1 a:1 -> b:1\n");
+    b += sprawdz(kolejnosc.ok, "kolejnosc wierszy dowolna (zamowienie przed receptura)");
+    var typ = konfiguracja.wczytaj("receptura R piec 1 a:1 -> b:1\nmagazyn M bez_limitu\nmaszyna X krajarka R\nzamowienie b 1 M\n");
+    b += sprawdz(not typ.ok and zawiera(typ.bledy.at(0).asSlice(), "wymaga maszyny typu piec"), "maszyna niewlasciwego typu dla receptury odrzucona");
+    var zasob = konfiguracja.wczytaj("receptura R t 1 a:1 -> b:1\nmagazyn M bez_limitu\nmaszyna X t R\npolaczenie M X rdua 1 1\nzamowienie b 1 M\n");
+    b += sprawdz(not zasob.ok and zawiera(zasob.bledy.at(0).asSlice(), "nieznany zasob rdua"), "literowka w nazwie zasobu wykryta");
+    var kierunek = konfiguracja.wczytaj("receptura R t 1 a:1 -> b:1\nmagazyn M bez_limitu\nmaszyna X t R\npolaczenie X M a 1 1\npolaczenie M X b 1 1\nzamowienie b 1 M\n");
+    b += sprawdz(not kierunek.ok and kierunek.bledy.length() == 2, "polaczenie z zasobem, ktorego maszyna nie wytwarza / nie potrzebuje, odrzucone");
+    var wiele = konfiguracja.wczytaj("receptura R t 0 a:1 -> b:1\nfabryka X\nmagazyn M 0\nmagazyn M bez_limitu\nzamowienie b 1 M\nzamowienie b 2 M\n");
+    b += sprawdz(not wiele.ok and wiele.bledy.length() >= 4, "wszystkie bledy naraz: czas 0, nieznane polecenie, pojemnosc 0, dwa zamowienia");
+    var pojemnosc = konfiguracja.wczytaj("receptura R t 1 a:1 -> b:1\nmagazyn M 5\nzapas M a 6\nzamowienie b 1 M\n");
+    b += sprawdz(not pojemnosc.ok and zawiera(pojemnosc.bledy.at(0).asSlice(), "pojemnosc"), "zapas wiekszy niz pojemnosc magazynu odrzucony");
+    var bezZam = konfiguracja.wczytaj("receptura R t 1 a:1 -> b:1\nmagazyn M bez_limitu\n");
+    b += sprawdz(not bezZam.ok, "brak zamowienia odrzucony");
+    return b;
+}
+
+fun testySymulacji() -> i64 = {
+    var b: i64 = 0;
+    var a = fabryka(UKLAD_A);
+    symulacja.symuluj(&a);
+    b += sprawdz(a.ukonczono and a.krok == 44, "uklad A (szeregowy): zamowienie 6 modulow w kroku 44");
+    b += sprawdz(maszyna(&a, "PIEC1", 12, 36, 8, 0) and maszyna(&a, "KRAJARKA1", 12, 24, 20, 0) and maszyna(&a, "MONTAZ1", 6, 24, 20, 0), "uklad A: cykle i kroki pracy/glodu/blokady jak w modelu referencyjnym");
+    b += sprawdz(wMagazynie(&a, "MAG_WE", "ruda") == 0 and wMagazynie(&a, "MAG_WY", "modul") == 6 and bilans(&a), "uklad A: zuzyte 24 rudy, 6 modulow, bilans zasobow sie zgadza");
+    b += sprawdz(raport.waskieGardlo(&a) == model.indeksElementu(&a, "PIEC1"), "uklad A: waskie gardlo to piec");
+    var bb = fabryka(UKLAD_B);
+    symulacja.symuluj(&bb);
+    b += sprawdz(bb.ukonczono and bb.krok == 33, "uklad B (dwa piece): zamowienie w kroku 33");
+    b += sprawdz(maszyna(&bb, "PIEC1", 6, 18, 15, 0) and maszyna(&bb, "PIEC2", 6, 18, 15, 0) and maszyna(&bb, "KRAJARKA1", 12, 24, 9, 0) and maszyna(&bb, "MONTAZ1", 6, 24, 9, 0), "uklad B: statystyki maszyn jak w modelu referencyjnym");
+    var k = fabryka(UKLAD_KARTY);
+    symulacja.symuluj(&k);
+    b += sprawdz(not k.ukonczono and k.stoi and k.krok == 27 and wMagazynie(&k, "MAG_WY", "modul") == 3, "przyklad karty: z 12 rudy najwyzej 3 moduly; produkcja staje w kroku 27");
+    b += sprawdz(maszyna(&k, "PIEC1", 6, 18, 9, 0) and maszyna(&k, "MONTAZ1", 3, 12, 15, 0) and bilans(&k), "przyklad karty: 6 cykli pieca, 3 montazu, bilans zasobow");
+    var opis = raport.opisWyniku(&k, "K");
+    b += sprawdz(zawiera(opis.asSlice(), "NIE ZREALIZOWANE") and zawiera(opis.asSlice(), "jest 3 z 4"), "raport opisuje niezrealizowane zamowienie (3 z 4)");
+    var z = fabryka(UKLAD_KOPALNI);
+    var pojemnoscOk = true;
+    var bilansOk = true;
+    var nic: List[String];
+    while (not z.ukonczono and not z.stoi and z.krok < 1000) {
+        symulacja.krok(&z, false, &nic);
+        if (symulacja.zawartosc(&z, model.indeksElementu(&z, "SKLAD")) > 6) pojemnoscOk = false;
+        if (not bilans(&z)) bilansOk = false;
+    }
+    b += sprawdz(z.ukonczono and z.krok == 35, "kopalnia: zamowienie 4 modulow w kroku 35");
+    b += sprawdz(z.elementy.at(model.indeksElementu(&z, "KOPALNIA")).wydano == 16 and maszyna(&z, "PIEC1", 8, 24, 11, 0), "kopalnia: zrodlo wydobylo dokladnie limit 16");
+    b += sprawdz(pojemnoscOk, "magazyn SKLAD (pojemnosc 6) nigdy nie jest przepelniony");
+    b += sprawdz(bilansOk, "bilans zasobow zgodny po kazdym kroku (nic nie powstaje bez surowcow)");
+    return b;
+}
+
+fun testyBrakow() -> i64 = {
+    var b: i64 = 0;
+    var s: sesja.Sesja;
+    sesja.wczytajTekst(&s, "A", "A", UKLAD_A);
+    let w = sesja.wykonaj(&s, "wylacz A KRAJARKA1 MONTAZ1");
+    b += sprawdz(w.ok, "wylaczenie polaczenia KRAJARKA1 -> MONTAZ1");
+    var f = copy s.uklady.at(0).fabryka;
+    symulacja.symuluj(&f);
+    b += sprawdz(f.stoi and f.krok == 26 and maszyna(&f, "KRAJARKA1", 2, 6, 6, 14) and maszyna(&f, "MONTAZ1", 0, 0, 26, 0), "bez polaczenia: krajarka blokuje sie, montaz nie dostaje plytek, stop w kroku 26");
+    b += sprawdz(maszyna(&f, "PIEC1", 7, 24, 1, 1) and wMagazynie(&f, "MAG_WE", "ruda") == 4 and bilans(&f), "bez polaczenia: piec tez sie blokuje, w magazynie zostaja 4 rudy");
+    var opis = raport.opisWyniku(&f, "A");
+    b += sprawdz(zawiera(opis.asSlice(), "jest wylaczone") and zawiera(opis.asSlice(), "zablokowana"), "raport wskazuje wylaczone polaczenie i blokade");
+    var s2: sesja.Sesja;
+    sesja.wczytajTekst(&s2, "A", "A", UKLAD_A);
+    sesja.wykonaj(&s2, "zapas A MAG_WE ruda 0");
+    var g = copy s2.uklady.at(0).fabryka;
+    symulacja.symuluj(&g);
+    b += sprawdz(g.stoi and g.krok == 1 and maszyna(&g, "PIEC1", 0, 0, 1, 0), "bez rudy: nic nie powstaje, stop w kroku 1");
+    var opisG = raport.opisWyniku(&g, "A");
+    b += sprawdz(zawiera(opisG.asSlice(), "PIEC1: czeka na ruda"), "raport: piec czeka na rude");
+    return b;
+}
+
+fun testyPorownania() -> i64 = {
+    var b: i64 = 0;
+    var s: sesja.Sesja;
+    sesja.wczytajTekst(&s, "A", "A", UKLAD_A);
+    sesja.wczytajTekst(&s, "B", "B", UKLAD_B);
+    let p = sesja.wykonaj(&s, "porownaj A B");
+    b += sprawdz(p.ok and zawiera(p.tekst.asSlice(), "krok 44") and zawiera(p.tekst.asSlice(), "krok 33"), "porownanie A i B: 44 wobec 33 krokow");
+    b += sprawdz(zawiera(p.tekst.asSlice(), "Uklad B konczy o 11 krokow wczesniej"), "porownanie wskazuje szybszy uklad i roznice");
+    sesja.wczytajTekst(&s, "K", "K", UKLAD_KARTY);
+    let r = sesja.wykonaj(&s, "porownaj A K");
+    b += sprawdz(not r.ok and zawiera(r.tekst.asSlice(), "rozne zapasy"), "porownanie przy roznych zapasach odrzucone");
+    let pierwszy = sesja.wykonaj(&s, "symuluj A");
+    let drugi = sesja.wykonaj(&s, "symuluj A");
+    b += sprawdz(pierwszy.ok and tekst.rowne(pierwszy.tekst.asSlice(), drugi.tekst.asSlice()), "symulacja powtarzalna (kazda zaczyna od stanu poczatkowego)");
+    return b;
+}
+
+fun testyPrzebiegu() -> i64 = {
+    var b: i64 = 0;
+    var s: sesja.Sesja;
+    sesja.wczytajTekst(&s, "A", "A", UKLAD_A);
+    let p = sesja.wykonaj(&s, "przebieg A 1 5");
+    b += sprawdz(p.ok and zawiera(p.tekst.asSlice(), "krok 1:") and zawiera(p.tekst.asSlice(), "transport MAG_WE -> PIEC1: 2 ruda (dotrze w kroku 2)"), "przebieg: krok 1 wysyla 2 rudy do pieca");
+    b += sprawdz(zawiera(p.tekst.asSlice(), "PIEC1 zaczyna WYTAPIANIE") and zawiera(p.tekst.asSlice(), "PIEC1 konczy cykl: 1 metal"), "przebieg: piec zaczyna w kroku 2 i konczy w kroku 4");
+    var f = fabryka(UKLAD_A);
+    var zd: List[String];
+    symulacja.krok(&f, true, &zd);
+    symulacja.krok(&f, true, &zd);
+    let e = model.indeksElementu(&f, "PIEC1");
+    b += sprawdz(f.elementy.at(e).pozostalo == 2 and f.elementy.at(e).wejscie.at(model.indeksZasobu(&f, "ruda")) == 0, "surowce pobierane w calosci na starcie cyklu");
+    symulacja.krok(&f, true, &zd);
+    let metal = model.indeksZasobu(&f, "metal");
+    b += sprawdz(f.elementy.at(e).wyjscie.at(metal) == 0, "w kroku 3 metalu jeszcze nie ma");
+    var zd4: List[String];
+    symulacja.krok(&f, true, &zd4);
+    b += sprawdz(f.elementy.at(e).cykle == 1 and zawiera(zd4.at(zd4.length() - 1).asSlice(), "transport PIEC1 -> KRAJARKA1"), "metal powstaje w kroku 4 (2 + 3 - 1) i wyjezdza w tym samym kroku");
+    return b;
+}
+
+fun main() -> i64 = {
+    var bledy: i64 = 0;
+    bledy += testyKonfiguracji();
+    bledy += testySymulacji();
+    bledy += testyBrakow();
+    bledy += testyPorownania();
+    bledy += testyPrzebiegu();
+    print(f"Bledy: {bledy}\n");
+    return bledy;
+}

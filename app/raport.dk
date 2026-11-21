@@ -1,0 +1,273 @@
+#{
+    Raport produkcji jednego układu i porównanie dwóch układów.
+    Wykorzystanie maszyny = kroki pracy / liczba kroków symulacji. Wąskim gardłem nazywamy
+    maszynę o najwyższym wykorzystaniu: pracuje prawie bez przerwy, a maszyny za nią czekają
+    na jej produkty (rosną im kroki "czeka na surowiec").
+#}
+import core.containers.*;
+import app.tekst;
+import app.model;
+import app.symulacja;
+
+# Procent w setnych (np. 8182 = 81.82%), zaokrąglony połówkowo w górę.
+fun procent(czesc: i64, calosc: i64) -> i64 = {
+    if (calosc <= 0) return 0;
+    return (czesc * 20000 + calosc) / (2 * calosc);
+}
+
+fun waskieGardlo(f: ref model.Fabryka) -> i64 = {
+    var najlepsza: i64 = -1;
+    var e: i64 = 0;
+    while (e < f.elementy.length()) {
+        if (f.elementy.at(e).rodzaj == model.MASZYNA) {
+            if (najlepsza < 0 or f.elementy.at(e).praca > f.elementy.at(najlepsza).praca) najlepsza = e;
+        }
+        e += 1;
+    }
+    return najlepsza;
+}
+
+fun stanZamowienia(f: ref model.Fabryka) -> String = {
+    var w: String;
+    let jest = f.elementy.at(f.cel).wyjscie.at(f.produkt);
+    let produkt = model.nazwaZasobu(f, f.produkt);
+    let cel = f.elementy.at(f.cel).nazwa.asSlice();
+    if (f.ukonczono) {
+        w.append(f"Zamowienie {f.ilosc} x {produkt} w {cel}: ZREALIZOWANE w kroku {f.krok}.\n");
+    } else if (f.stoi) {
+        w.append(f"Zamowienie {f.ilosc} x {produkt} w {cel}: NIE ZREALIZOWANE - produkcja stanela w kroku {f.krok}; w {cel} jest {jest} z {f.ilosc}.\n");
+    } else {
+        w.append(f"Zamowienie {f.ilosc} x {produkt} w {cel}: NIE ZREALIZOWANE w limicie {f.maksKrokow} krokow; w {cel} jest {jest} z {f.ilosc}.\n");
+    }
+    return w;
+}
+
+# Przyczyny zatrzymania: na co czekają maszyny, wyczerpane źródła, wyłączone połączenia.
+fun diagnoza(f: ref model.Fabryka) -> String = {
+    var w: String;
+    var e: i64 = 0;
+    while (e < f.elementy.length()) {
+        if (f.elementy.at(e).rodzaj == model.MASZYNA) {
+            let r = f.elementy.at(e).receptura;
+            if (f.elementy.at(e).gotowe) {
+                let czeka = symulacja.opisIlosci(f, &f.receptury.at(r).wyjscia);
+                w.append(f"  - {f.elementy.at(e).nazwa.asSlice()}: zablokowana - gotowy produkt ({czeka.asSlice()}) czeka na miejsce w pelnym buforze wyjsciowym\n");
+            } else if (f.elementy.at(e).pozostalo == 0) {
+                var k: i64 = 0;
+                while (k < f.receptury.at(r).wejscia.length()) {
+                    let wej = f.receptury.at(r).wejscia.at(k);
+                    let ma = f.elementy.at(e).wejscie.at(wej.zasob);
+                    if (ma < wej.ilosc) {
+                        w.append(f"  - {f.elementy.at(e).nazwa.asSlice()}: czeka na {model.nazwaZasobu(f, wej.zasob)} (ma {ma}, potrzebuje {wej.ilosc} na cykl)\n");
+                    }
+                    k += 1;
+                }
+            }
+        }
+        if (f.elementy.at(e).rodzaj == model.ZRODLO and f.elementy.at(e).wydano >= f.elementy.at(e).limit) {
+            w.append(f"  - {f.elementy.at(e).nazwa.asSlice()}: zrodlo wyczerpane ({f.elementy.at(e).wydano} z {f.elementy.at(e).limit})\n");
+        }
+        e += 1;
+    }
+    var c: i64 = 0;
+    while (c < f.polaczenia.length()) {
+        if (not f.polaczenia.at(c).aktywne) {
+            let skad = f.elementy.at(f.polaczenia.at(c).z).nazwa.asSlice();
+            let dokad = f.elementy.at(f.polaczenia.at(c).cel).nazwa.asSlice();
+            w.append(f"  - polaczenie {skad} -> {dokad} ({model.nazwaZasobu(f, f.polaczenia.at(c).zasob)}) jest wylaczone\n");
+        }
+        c += 1;
+    }
+    var z: i64 = 0;
+    while (z < f.zasoby.length()) {
+        let wszystkie = symulacja.wszystkieSztuki(f, z);
+        if (wszystkie > 0) {
+            var gdzie: String;
+            var m: i64 = 0;
+            while (m < f.elementy.length()) {
+                let sztuk = f.elementy.at(m).wejscie.at(z) + f.elementy.at(m).wyjscie.at(z);
+                if (sztuk > 0) {
+                    if (gdzie.length() > 0) gdzie.append(", ");
+                    gdzie.append(f"{f.elementy.at(m).nazwa.asSlice()} {sztuk}");
+                }
+                m += 1;
+            }
+            w.append(f"  - pozostaje {wszystkie} {model.nazwaZasobu(f, z)} w magazynach, buforach i w drodze: {gdzie.asSlice()}\n");
+        }
+        z += 1;
+    }
+    return w;
+}
+
+fun opisWyniku(f: ref model.Fabryka, uklad: str) -> String = {
+    var w: String;
+    w.append(f"Uklad {uklad}: {f.elementy.length()} elementow, {f.polaczenia.length()} polaczen, {f.krok} krokow symulacji\n");
+    w.append(stanZamowienia(f).asSlice());
+    if (not f.ukonczono) {
+        w.append("Przyczyny:\n");
+        w.append(diagnoza(f).asSlice());
+    }
+    w.append(tekst.kolumna("Maszyna", 12, false).asSlice());
+    w.append(tekst.kolumna("Typ", 11, false).asSlice());
+    w.append(tekst.kolumna("Cykle", 7, true).asSlice());
+    w.append(tekst.kolumna("Praca", 9, true).asSlice());
+    w.append(tekst.kolumna("Czeka na surowiec", 19, true).asSlice());
+    w.append(tekst.kolumna("Blokada", 9, true).asSlice());
+    w.append("\n");
+    var e: i64 = 0;
+    while (e < f.elementy.length()) {
+        if (f.elementy.at(e).rodzaj == model.MASZYNA) {
+            let el = f.elementy.at(e);
+            w.append(tekst.kolumna(el.nazwa.asSlice(), 12, false).asSlice());
+            w.append(tekst.kolumna(el.typ.asSlice(), 11, false).asSlice());
+            w.append(tekst.kolumna(el.cykle.toString().asSlice(), 7, true).asSlice());
+            w.append(tekst.kolumna(tekst.udzialTekst(procent(el.praca, f.krok)).asSlice(), 9, true).asSlice());
+            w.append(tekst.kolumna(tekst.udzialTekst(procent(el.glod, f.krok)).asSlice(), 19, true).asSlice());
+            w.append(tekst.kolumna(tekst.udzialTekst(procent(el.blokada, f.krok)).asSlice(), 9, true).asSlice());
+            w.append("\n");
+        }
+        e += 1;
+    }
+    w.append("Wyprodukowano:");
+    var z: i64 = 0;
+    while (z < f.zasoby.length()) {
+        let n = symulacja.wyprodukowano(f, z);
+        if (n > 0) w.append(f" {model.nazwaZasobu(f, z)} {n};");
+        z += 1;
+    }
+    w.append("\nMagazyny na koniec:");
+    var m: i64 = 0;
+    while (m < f.elementy.length()) {
+        if (f.elementy.at(m).rodzaj == model.MAGAZYN) {
+            w.append(f" {f.elementy.at(m).nazwa.asSlice()} [");
+            var pierwszy = true;
+            var k: i64 = 0;
+            while (k < f.zasoby.length()) {
+                if (f.elementy.at(m).wyjscie.at(k) > 0) {
+                    if (not pierwszy) w.append(", ");
+                    w.append(f"{model.nazwaZasobu(f, k)} {f.elementy.at(m).wyjscie.at(k)}");
+                    pierwszy = false;
+                }
+                k += 1;
+            }
+            w.append("]");
+        }
+        m += 1;
+    }
+    w.append("\n");
+    let g = waskieGardlo(f);
+    if (g >= 0) {
+        w.append(f"Waskie gardlo: {f.elementy.at(g).nazwa.asSlice()} (pracuje {tekst.udzialTekst(procent(f.elementy.at(g).praca, f.krok)).asSlice()} krokow).\n");
+    }
+    return w;
+}
+
+# Zapasy początkowe i limity źródeł obu układów, porównane po nazwach zasobów.
+fun takieSameZapasy(a: ref model.Fabryka, b: ref model.Fabryka) -> String = {
+    var roznice: String;
+    var z: i64 = 0;
+    while (z < a.zasoby.length()) {
+        let w = model.indeksZasobu(b, a.zasoby.at(z).asSlice());
+        var zapasB: i64 = 0;
+        var zrodlaB: i64 = 0;
+        if (w >= 0) {
+            zapasB = b.zapasStart.at(w);
+            zrodlaB = b.limitZrodel.at(w);
+        }
+        if (a.zapasStart.at(z) != zapasB or a.limitZrodel.at(z) != zrodlaB) {
+            roznice.append(f" {a.zasoby.at(z).asSlice()} ({a.zapasStart.at(z)}+{a.limitZrodel.at(z)} ze zrodel wobec {zapasB}+{zrodlaB});");
+        }
+        z += 1;
+    }
+    var y: i64 = 0;
+    while (y < b.zasoby.length()) {
+        if (model.indeksZasobu(a, b.zasoby.at(y).asSlice()) < 0 and (b.zapasStart.at(y) > 0 or b.limitZrodel.at(y) > 0)) {
+            roznice.append(f" {b.zasoby.at(y).asSlice()} (tylko w drugim ukladzie);");
+        }
+        y += 1;
+    }
+    return roznice;
+}
+
+class Porownanie {
+    ok: bool = false;
+    tekst: String;
+}
+
+# Porównanie dwóch układów po symulacji (a i b muszą być już zasymulowane).
+fun porownaj(a: ref model.Fabryka, nazwaA: str, b: ref model.Fabryka, nazwaB: str) -> Porownanie = {
+    var wynik: Porownanie;
+    let roznice = takieSameZapasy(a, b);
+    if (roznice.length() > 0) {
+        wynik.tekst.append(f"Porownanie odrzucone: uklady maja rozne zapasy poczatkowe:{roznice.asSlice()}\n");
+        return wynik;
+    }
+    if (not tekst.rowne(model.nazwaZasobu(a, a.produkt), model.nazwaZasobu(b, b.produkt)) or a.ilosc != b.ilosc) {
+        wynik.tekst.append("Porownanie odrzucone: uklady realizuja rozne zamowienia.\n");
+        return wynik;
+    }
+    wynik.ok = true;
+    let produkt = model.nazwaZasobu(a, a.produkt);
+    wynik.tekst.append(f"Porownanie ukladow {nazwaA} i {nazwaB}: zamowienie {a.ilosc} x {produkt}, te same zapasy poczatkowe\n");
+    wynik.tekst.append(tekst.kolumna("", 26, false).asSlice());
+    wynik.tekst.append(tekst.kolumna(nazwaA, 16, true).asSlice());
+    wynik.tekst.append(tekst.kolumna(nazwaB, 16, true).asSlice());
+    wynik.tekst.append("\n");
+    var stanA: String;
+    var stanB: String;
+    if (a.ukonczono) stanA.append(f"krok {a.krok}");
+    else stanA.append("nie ukonczono");
+    if (b.ukonczono) stanB.append(f"krok {b.krok}");
+    else stanB.append("nie ukonczono");
+    wynik.tekst.append(tekst.kolumna("Realizacja zamowienia", 26, false).asSlice());
+    wynik.tekst.append(tekst.kolumna(stanA.asSlice(), 16, true).asSlice());
+    wynik.tekst.append(tekst.kolumna(stanB.asSlice(), 16, true).asSlice());
+    wynik.tekst.append("\n");
+    let ga = waskieGardlo(a);
+    let gb = waskieGardlo(b);
+    if (ga >= 0 and gb >= 0) {
+        wynik.tekst.append(tekst.kolumna("Waskie gardlo", 26, false).asSlice());
+        wynik.tekst.append(tekst.kolumna(a.elementy.at(ga).nazwa.asSlice(), 16, true).asSlice());
+        wynik.tekst.append(tekst.kolumna(b.elementy.at(gb).nazwa.asSlice(), 16, true).asSlice());
+        wynik.tekst.append("\n");
+        wynik.tekst.append(tekst.kolumna("Jego wykorzystanie", 26, false).asSlice());
+        wynik.tekst.append(tekst.kolumna(tekst.udzialTekst(procent(a.elementy.at(ga).praca, a.krok)).asSlice(), 16, true).asSlice());
+        wynik.tekst.append(tekst.kolumna(tekst.udzialTekst(procent(b.elementy.at(gb).praca, b.krok)).asSlice(), 16, true).asSlice());
+        wynik.tekst.append("\n");
+    }
+    var maszynyA: i64 = 0;
+    var maszynyB: i64 = 0;
+    var e: i64 = 0;
+    while (e < a.elementy.length()) { if (a.elementy.at(e).rodzaj == model.MASZYNA) maszynyA += 1; e += 1; }
+    var k: i64 = 0;
+    while (k < b.elementy.length()) { if (b.elementy.at(k).rodzaj == model.MASZYNA) maszynyB += 1; k += 1; }
+    wynik.tekst.append(tekst.kolumna("Liczba maszyn", 26, false).asSlice());
+    wynik.tekst.append(tekst.kolumna(maszynyA.toString().asSlice(), 16, true).asSlice());
+    wynik.tekst.append(tekst.kolumna(maszynyB.toString().asSlice(), 16, true).asSlice());
+    wynik.tekst.append("\n");
+    if (a.ukonczono and b.ukonczono) {
+        if (a.krok == b.krok) {
+            wynik.tekst.append("Oba uklady realizuja zamowienie w tym samym czasie.\n");
+        } else {
+            var szybszy = nazwaB;
+            var wolniejszy = nazwaA;
+            var roznica = a.krok - b.krok;
+            var dluzszy = a.krok;
+            if (b.krok > a.krok) {
+                szybszy = nazwaA;
+                wolniejszy = nazwaB;
+                roznica = b.krok - a.krok;
+                dluzszy = b.krok;
+            }
+            wynik.tekst.append(f"Uklad {szybszy} konczy o {roznica} krokow wczesniej niz {wolniejszy} ({tekst.udzialTekst(procent(roznica, dluzszy)).asSlice()} krocej).\n");
+        }
+        if (ga >= 0 and gb >= 0) {
+            wynik.tekst.append(f"Wyjasnienie: w ukladzie {nazwaA} ograniczeniem jest {a.elementy.at(ga).nazwa.asSlice()} (typ {a.elementy.at(ga).typ.asSlice()}), ");
+            wynik.tekst.append(f"w ukladzie {nazwaB} - {b.elementy.at(gb).nazwa.asSlice()} (typ {b.elementy.at(gb).typ.asSlice()}). ");
+            wynik.tekst.append("Czas realizacji wyznacza najwolniejszy etap lancucha; dodanie maszyny na tym etapie skraca czas, dopoki ograniczeniem nie stanie sie inny etap.\n");
+        }
+    } else {
+        wynik.tekst.append("Przynajmniej jeden uklad nie zrealizowal zamowienia - szczegoly w raportach (polecenie symuluj).\n");
+    }
+    return wynik;
+}

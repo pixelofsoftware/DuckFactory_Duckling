@@ -1,0 +1,19 @@
+# Przyklad z karty P03: z 12 jednostek rudy powstana najwyzej 3 moduly.
+# Zamowienie na 4 moduly nie moze sie udac - program pokazuje, gdzie stanela produkcja.
+receptura WYTAPIANIE piec 3 ruda:2 -> metal:1
+receptura CIECIE krajarka 2 metal:1 -> plytka:1
+receptura MONTAZ montownia 4 plytka:2 -> modul:1
+
+magazyn MAG_WE bez_limitu
+magazyn MAG_WY bez_limitu
+maszyna PIEC1 piec WYTAPIANIE
+maszyna KRAJARKA1 krajarka CIECIE
+maszyna MONTAZ1 montownia MONTAZ
+
+polaczenie MAG_WE PIEC1 ruda 2 1
+polaczenie PIEC1 KRAJARKA1 metal 1 1
+polaczenie KRAJARKA1 MONTAZ1 plytka 2 1
+polaczenie MONTAZ1 MAG_WY modul 1 1
+
+zapas MAG_WE ruda 12
+zamowienie modul 4 MAG_WY

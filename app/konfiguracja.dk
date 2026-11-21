@@ -1,0 +1,378 @@
+#{
+    Wczytanie układu fabryki z pliku tekstowego: jedno polecenie w wierszu, słowa oddzielone
+    spacjami, '#' zaczyna komentarz. Kolejność wierszy dowolna: najpierw czytamy receptury,
+    potem elementy (magazyny, źródła, maszyny), na końcu połączenia, zapasy, zamówienie i limit.
+    Każdy błąd ma numer wiersza; konfiguracja z błędem nie jest przyjmowana w ogóle.
+
+      receptura NAZWA TYP_MASZYNY CZAS zasob:ilosc[,zasob:ilosc...] -> zasob:ilosc[,...]
+      magazyn NAZWA POJEMNOSC|bez_limitu
+      zrodlo NAZWA ZASOB NA_KROK LIMIT
+      maszyna NAZWA TYP_MASZYNY RECEPTURA
+      polaczenie Z DO ZASOB PRZEPUSTOWOSC OPOZNIENIE
+      zapas MAGAZYN ZASOB ILOSC
+      zamowienie ZASOB ILOSC MAGAZYN
+      limit MAKS_KROKOW
+#}
+import core.containers.*;
+import app.tekst;
+import app.model;
+
+const MAKS_ILOSC: i64 = 1000000;
+const MAKS_CZAS: i64 = 1000;
+const MAKS_POJEMNOSC: i64 = 1000000000;
+const MAKS_LIMIT_KROKOW: i64 = 1000000;
+
+class WynikKonfiguracji {
+    ok: bool = false;
+    fabryka: model.Fabryka;
+    bledy: List[String];
+}
+
+# Nazwa: 1-24 znaki A-Z, a-z, 0-9, '_' lub '-'.
+fun poprawnaNazwa(nazwa: str) -> bool = {
+    if (nazwa.length() < 1 or nazwa.length() > 24) return false;
+    var i: i64 = 0;
+    while (i < nazwa.length()) {
+        let z = nazwa[i];
+        let dobry = (z >= 'A' and z <= 'Z') or (z >= 'a' and z <= 'z') or (z >= '0' and z <= '9') or z == '_' or z == '-';
+        if (not dobry) return false;
+        i += 1;
+    }
+    return true;
+}
+
+fun dodajZasob(f: ref model.Fabryka, nazwa: str) -> i64 = {
+    let i = model.indeksZasobu(f, nazwa);
+    if (i >= 0) return i;
+    var n: String;
+    n.append(nazwa);
+    f.zasoby.push(move n);
+    return f.zasoby.length() - 1;
+}
+
+class ListaIlosci {
+    ok: bool = false;
+    ilosci: List[model.Ilosc];
+    blad: String;
+}
+
+# Lista "zasob:ilosc,zasob:ilosc"; nowe zasoby są rejestrowane.
+fun ilosci(f: ref model.Fabryka, opis: str) -> ListaIlosci = {
+    var wynik: ListaIlosci;
+    let czesci = tekst.pola(opis, ',');
+    var i: i64 = 0;
+    while (i < czesci.length()) {
+        let para = tekst.pola(czesci.at(i).asSlice(), ':');
+        if (para.length() != 2 or not poprawnaNazwa(para.at(0).asSlice())) {
+            wynik.blad.append(f"niepoprawny zapis '{czesci.at(i).asSlice()}' (oczekiwano zasob:ilosc)");
+            return wynik;
+        }
+        let n = tekst.parsujLiczbe(para.at(1).asSlice(), MAKS_ILOSC);
+        if (not n.ok or n.wartosc < 1) {
+            wynik.blad.append(f"ilosc w '{czesci.at(i).asSlice()}' musi byc liczba od 1 do {MAKS_ILOSC}");
+            return wynik;
+        }
+        var il = model.Ilosc();
+        il.zasob = dodajZasob(f, para.at(0).asSlice());
+        il.ilosc = n.wartosc;
+        var j: i64 = 0;
+        while (j < wynik.ilosci.length()) {
+            if (wynik.ilosci.at(j).zasob == il.zasob) {
+                wynik.blad.append(f"zasob '{para.at(0).asSlice()}' powtorzony w jednej liscie");
+                return wynik;
+            }
+            j += 1;
+        }
+        wynik.ilosci.push(il);
+        i += 1;
+    }
+    if (wynik.ilosci.length() == 0) {
+        wynik.blad.append("pusta lista zasobow");
+        return wynik;
+    }
+    wynik.ok = true;
+    return wynik;
+}
+
+# Słowa wiersza bez komentarza.
+fun slowaWiersza(linia: str) -> List[String] = {
+    var bez: String;
+    var i: i64 = 0;
+    var komentarz = false;
+    while (i < linia.length()) {
+        if (linia[i] == '#') komentarz = true;
+        if (not komentarz) bez.append(linia[i]);
+        i += 1;
+    }
+    return tekst.slowa(bez.asSlice());
+}
+
+fun liczba(s: str, maks: i64) -> i64 = {
+    let w = tekst.parsujLiczbe(s, maks);
+    if (not w.ok) return -1;
+    return w.wartosc;
+}
+
+fun receptura(f: ref model.Fabryka, s: ref List[String], bledy: ref List[String], wiersz: i64) -> () = {
+    # receptura NAZWA TYP CZAS wejscia -> wyjscia
+    var strzalka: i64 = -1;
+    var k: i64 = 0;
+    while (k < s.length()) {
+        if (tekst.rowne(s.at(k).asSlice(), "->")) strzalka = k;
+        k += 1;
+    }
+    if (s.length() < 7 or strzalka < 5 or strzalka == s.length() - 1) {
+        bledy.push(f"wiersz {wiersz}: oczekiwano 'receptura NAZWA TYP CZAS wejscia -> wyjscia'");
+    } else if (not poprawnaNazwa(s.at(1).asSlice()) or not poprawnaNazwa(s.at(2).asSlice())) {
+        bledy.push(f"wiersz {wiersz}: niepoprawna nazwa receptury albo typu maszyny");
+    } else if (model.indeksReceptury(f, s.at(1).asSlice()) >= 0) {
+        bledy.push(f"wiersz {wiersz}: receptura {s.at(1).asSlice()} jest juz zdefiniowana");
+    } else {
+        let czas = liczba(s.at(3).asSlice(), MAKS_CZAS);
+        var we: String;
+        var a: i64 = 4;
+        while (a < strzalka) { we.append(s.at(a).asSlice()); a += 1; }
+        var wy: String;
+        var b: i64 = strzalka + 1;
+        while (b < s.length()) { wy.append(s.at(b).asSlice()); b += 1; }
+        var wejscia = ilosci(f, we.asSlice());
+        var wyjscia = ilosci(f, wy.asSlice());
+        if (czas < 1) {
+            bledy.push(f"wiersz {wiersz}: czas receptury musi byc liczba od 1 do {MAKS_CZAS}");
+        } else if (not wejscia.ok) {
+            bledy.push(f"wiersz {wiersz}: wejscia receptury: {wejscia.blad.asSlice()}");
+        } else if (not wyjscia.ok) {
+            bledy.push(f"wiersz {wiersz}: wyjscia receptury: {wyjscia.blad.asSlice()}");
+        } else {
+            var r: model.Receptura;
+            r.nazwa.append(s.at(1).asSlice());
+            r.typ.append(s.at(2).asSlice());
+            r.czas = czas;
+            r.wejscia = copy wejscia.ilosci;
+            r.wyjscia = copy wyjscia.ilosci;
+            f.receptury.push(move r);
+        }
+    }
+}
+
+fun nowyElement(f: ref model.Fabryka, rodzaj: i32, nazwa: str) -> model.Element = {
+    var e: model.Element;
+    e.rodzaj = rodzaj;
+    e.nazwa.append(nazwa);
+    return e;
+}
+
+fun element(f: ref model.Fabryka, s: ref List[String], bledy: ref List[String], wiersz: i64) -> () = {
+    let slowo = s.at(0).asSlice();
+    if (s.length() < 2 or not poprawnaNazwa(s.at(1).asSlice())) {
+        bledy.push(f"wiersz {wiersz}: niepoprawna nazwa elementu");
+    } else if (model.indeksElementu(f, s.at(1).asSlice()) >= 0) {
+        bledy.push(f"wiersz {wiersz}: element {s.at(1).asSlice()} jest juz zdefiniowany");
+    } else if (tekst.rowne(slowo, "magazyn")) {
+        if (s.length() != 3) {
+            bledy.push(f"wiersz {wiersz}: oczekiwano 'magazyn NAZWA POJEMNOSC|bez_limitu'");
+        } else {
+            var e = nowyElement(f, model.MAGAZYN, s.at(1).asSlice());
+            if (tekst.rowne(s.at(2).asSlice(), "bez_limitu")) {
+                f.elementy.push(move e);
+            } else {
+                let p = liczba(s.at(2).asSlice(), MAKS_POJEMNOSC);
+                if (p < 1) {
+                    bledy.push(f"wiersz {wiersz}: pojemnosc magazynu musi byc liczba od 1 do {MAKS_POJEMNOSC} albo bez_limitu");
+                } else {
+                    e.pojemnosc = p;
+                    f.elementy.push(move e);
+                }
+            }
+        }
+    } else if (tekst.rowne(slowo, "zrodlo")) {
+        if (s.length() != 5) {
+            bledy.push(f"wiersz {wiersz}: oczekiwano 'zrodlo NAZWA ZASOB NA_KROK LIMIT'");
+        } else {
+            let naKrok = liczba(s.at(3).asSlice(), MAKS_ILOSC);
+            let limit = liczba(s.at(4).asSlice(), MAKS_POJEMNOSC);
+            if (not poprawnaNazwa(s.at(2).asSlice())) {
+                bledy.push(f"wiersz {wiersz}: niepoprawna nazwa zasobu");
+            } else if (naKrok < 1 or limit < 1) {
+                bledy.push(f"wiersz {wiersz}: wydajnosc i limit zrodla musza byc dodatnie");
+            } else {
+                var e = nowyElement(f, model.ZRODLO, s.at(1).asSlice());
+                e.zasob = dodajZasob(f, s.at(2).asSlice());
+                e.naKrok = naKrok;
+                e.limit = limit;
+                f.elementy.push(move e);
+            }
+        }
+    } else {
+        if (s.length() != 4) {
+            bledy.push(f"wiersz {wiersz}: oczekiwano 'maszyna NAZWA TYP RECEPTURA'");
+        } else {
+            let r = model.indeksReceptury(f, s.at(3).asSlice());
+            if (r < 0) {
+                bledy.push(f"wiersz {wiersz}: nieznana receptura {s.at(3).asSlice()}");
+            } else if (not tekst.rowne(f.receptury.at(r).typ.asSlice(), s.at(2).asSlice())) {
+                bledy.push(f"wiersz {wiersz}: receptura {s.at(3).asSlice()} wymaga maszyny typu {f.receptury.at(r).typ.asSlice()}, a {s.at(1).asSlice()} jest typu {s.at(2).asSlice()}");
+            } else {
+                var e = nowyElement(f, model.MASZYNA, s.at(1).asSlice());
+                e.typ.append(s.at(2).asSlice());
+                e.receptura = r;
+                f.elementy.push(move e);
+            }
+        }
+    }
+}
+
+fun polaczenie(f: ref model.Fabryka, s: ref List[String], bledy: ref List[String], wiersz: i64) -> () = {
+    if (s.length() != 6) {
+        bledy.push(f"wiersz {wiersz}: oczekiwano 'polaczenie Z DO ZASOB PRZEPUSTOWOSC OPOZNIENIE'");
+    } else {
+        let z = model.indeksElementu(f, s.at(1).asSlice());
+        let cel = model.indeksElementu(f, s.at(2).asSlice());
+        let zasob = model.indeksZasobu(f, s.at(3).asSlice());
+        let przepustowosc = liczba(s.at(4).asSlice(), MAKS_ILOSC);
+        let opoznienie = liczba(s.at(5).asSlice(), MAKS_CZAS);
+        if (z < 0 or cel < 0) {
+            bledy.push(f"wiersz {wiersz}: nieznany element {s.at(1).asSlice()} albo {s.at(2).asSlice()}");
+        } else if (z == cel) {
+            bledy.push(f"wiersz {wiersz}: polaczenie elementu z samym soba");
+        } else if (zasob < 0) {
+            bledy.push(f"wiersz {wiersz}: nieznany zasob {s.at(3).asSlice()} (nie wystepuje w zadnej recepturze ani zrodle)");
+        } else if (przepustowosc < 1 or opoznienie < 1) {
+            bledy.push(f"wiersz {wiersz}: przepustowosc (od 1 do {MAKS_ILOSC}) i opoznienie (od 1 do {MAKS_CZAS} krokow) musza byc dodatnie");
+        } else if (f.elementy.at(cel).rodzaj == model.ZRODLO) {
+            bledy.push(f"wiersz {wiersz}: zrodlo {s.at(2).asSlice()} nie przyjmuje dostaw");
+        } else if (f.elementy.at(z).rodzaj == model.ZRODLO and f.elementy.at(z).zasob != zasob) {
+            bledy.push(f"wiersz {wiersz}: zrodlo {s.at(1).asSlice()} nie wydobywa {s.at(3).asSlice()}");
+        } else if (f.elementy.at(z).rodzaj == model.MASZYNA and model.naWyjsciu(f, f.elementy.at(z).receptura, zasob) == 0) {
+            bledy.push(f"wiersz {wiersz}: maszyna {s.at(1).asSlice()} nie wytwarza {s.at(3).asSlice()}");
+        } else if (f.elementy.at(cel).rodzaj == model.MASZYNA and model.naWejsciu(f, f.elementy.at(cel).receptura, zasob) == 0) {
+            bledy.push(f"wiersz {wiersz}: maszyna {s.at(2).asSlice()} nie potrzebuje {s.at(3).asSlice()}");
+        } else {
+            var p = model.Polaczenie();
+            p.z = z;
+            p.cel = cel;
+            p.zasob = zasob;
+            p.przepustowosc = przepustowosc;
+            p.opoznienie = opoznienie;
+            f.polaczenia.push(p);
+        }
+    }
+}
+
+fun reszta(f: ref model.Fabryka, s: ref List[String], bledy: ref List[String], wiersz: i64, zamowienia: ref i64) -> () = {
+    let slowo = s.at(0).asSlice();
+    if (tekst.rowne(slowo, "zapas")) {
+        if (s.length() != 4) {
+            bledy.push(f"wiersz {wiersz}: oczekiwano 'zapas MAGAZYN ZASOB ILOSC'");
+        } else {
+            let m = model.indeksElementu(f, s.at(1).asSlice());
+            let zasob = model.indeksZasobu(f, s.at(2).asSlice());
+            let n = liczba(s.at(3).asSlice(), MAKS_POJEMNOSC);
+            if (m < 0 or f.elementy.at(m).rodzaj != model.MAGAZYN) {
+                bledy.push(f"wiersz {wiersz}: zapas mozna umiescic tylko w zdefiniowanym magazynie ({s.at(1).asSlice()})");
+            } else if (zasob < 0) {
+                bledy.push(f"wiersz {wiersz}: nieznany zasob {s.at(2).asSlice()}");
+            } else if (n < 1) {
+                bledy.push(f"wiersz {wiersz}: ilosc zapasu musi byc dodatnia");
+            } else {
+                f.zapasStart.at(zasob) += n;
+                f.elementy.at(m).wyjscie.at(zasob) += n;
+            }
+        }
+    } else if (tekst.rowne(slowo, "zamowienie")) {
+        zamowienia += 1;
+        if (s.length() != 4) {
+            bledy.push(f"wiersz {wiersz}: oczekiwano 'zamowienie ZASOB ILOSC MAGAZYN'");
+        } else {
+            let zasob = model.indeksZasobu(f, s.at(1).asSlice());
+            let n = liczba(s.at(2).asSlice(), MAKS_POJEMNOSC);
+            let m = model.indeksElementu(f, s.at(3).asSlice());
+            if (zasob < 0) {
+                bledy.push(f"wiersz {wiersz}: nieznany zasob {s.at(1).asSlice()}");
+            } else if (n < 1) {
+                bledy.push(f"wiersz {wiersz}: zamawiana ilosc musi byc dodatnia");
+            } else if (m < 0 or f.elementy.at(m).rodzaj != model.MAGAZYN) {
+                bledy.push(f"wiersz {wiersz}: zamowienie musi trafic do zdefiniowanego magazynu ({s.at(3).asSlice()})");
+            } else {
+                f.produkt = zasob;
+                f.ilosc = n;
+                f.cel = m;
+            }
+        }
+    } else if (tekst.rowne(slowo, "limit")) {
+        var n: i64 = -1;
+        if (s.length() == 2) n = liczba(s.at(1).asSlice(), MAKS_LIMIT_KROKOW);
+        if (n < 1) bledy.push(f"wiersz {wiersz}: oczekiwano 'limit MAKS_KROKOW' (od 1 do {MAKS_LIMIT_KROKOW})");
+        else f.maksKrokow = n;
+    }
+}
+
+fun znaneSlowo(s: str) -> i64 = {
+    if (tekst.rowne(s, "receptura")) return 1;
+    if (tekst.rowne(s, "magazyn") or tekst.rowne(s, "zrodlo") or tekst.rowne(s, "maszyna")) return 2;
+    if (tekst.rowne(s, "polaczenie")) return 3;
+    if (tekst.rowne(s, "zapas") or tekst.rowne(s, "zamowienie") or tekst.rowne(s, "limit")) return 4;
+    return 0;
+}
+
+fun wczytaj(zawartosc: str) -> WynikKonfiguracji = {
+    var wynik: WynikKonfiguracji;
+    var f: model.Fabryka;
+    let linie = tekst.wiersze(zawartosc);
+    var etap: i64 = 1;
+    var zamowienia: i64 = 0;
+    while (etap <= 4) {
+        var n: i64 = 0;
+        while (n < linie.length()) {
+            var s = slowaWiersza(linie.at(n).asSlice());
+            if (s.length() > 0) {
+                let rodzaj = znaneSlowo(s.at(0).asSlice());
+                if (etap == 1 and rodzaj == 0) wynik.bledy.push(f"wiersz {n + 1}: nieznane polecenie '{s.at(0).asSlice()}'");
+                if (rodzaj == etap) {
+                    if (etap == 1) receptura(&f, &s, &wynik.bledy, n + 1);
+                    if (etap == 2) element(&f, &s, &wynik.bledy, n + 1);
+                    if (etap == 3) polaczenie(&f, &s, &wynik.bledy, n + 1);
+                    if (etap == 4) reszta(&f, &s, &wynik.bledy, n + 1, &zamowienia);
+                }
+            }
+            n += 1;
+        }
+        # Po elementach znamy wszystkie zasoby: przygotowujemy bufory i liczniki.
+        if (etap == 2) {
+            var e: i64 = 0;
+            while (e < f.elementy.length()) {
+                var z: i64 = 0;
+                while (z < f.zasoby.length()) {
+                    f.elementy.at(e).wejscie.push(0);
+                    f.elementy.at(e).wyjscie.push(0);
+                    z += 1;
+                }
+                if (f.elementy.at(e).rodzaj == model.ZRODLO) {
+                    while (f.limitZrodel.length() < f.zasoby.length()) f.limitZrodel.push(0);
+                    f.limitZrodel.at(f.elementy.at(e).zasob) += f.elementy.at(e).limit;
+                }
+                e += 1;
+            }
+            while (f.zapasStart.length() < f.zasoby.length()) f.zapasStart.push(0);
+            while (f.limitZrodel.length() < f.zasoby.length()) f.limitZrodel.push(0);
+        }
+        etap += 1;
+    }
+    if (zamowienia != 1) wynik.bledy.push(f"konfiguracja musi miec dokladnie jedno zamowienie (jest {zamowienia})");
+    var m: i64 = 0;
+    while (m < f.elementy.length()) {
+        if (f.elementy.at(m).rodzaj == model.MAGAZYN and f.elementy.at(m).pojemnosc != model.BEZ_LIMITU) {
+            var suma: i64 = 0;
+            var z: i64 = 0;
+            while (z < f.zasoby.length()) { suma += f.elementy.at(m).wyjscie.at(z); z += 1; }
+            if (suma > f.elementy.at(m).pojemnosc) {
+                wynik.bledy.push(f"zapasy w magazynie {f.elementy.at(m).nazwa.asSlice()} ({suma}) przekraczaja jego pojemnosc ({f.elementy.at(m).pojemnosc})");
+            }
+        }
+        m += 1;
+    }
+    if (f.elementy.length() == 0 and wynik.bledy.length() == 0) wynik.bledy.push(f"brak elementow fabryki");
+    wynik.ok = wynik.bledy.length() == 0;
+    if (wynik.ok) wynik.fabryka = move f;
+    return wynik;
+}

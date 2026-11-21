@@ -1,0 +1,20 @@
+# Uklad ze zrodlem: kopalnia wydobywa 1 jednostke rudy na krok, lacznie najwyzej 16.
+# Magazyn posredni ma ograniczona pojemnosc (6 sztuk), a transport rudy trwa 2 kroki.
+receptura WYTAPIANIE piec 3 ruda:2 -> metal:1
+receptura CIECIE krajarka 2 metal:1 -> plytka:1
+receptura MONTAZ montownia 4 plytka:2 -> modul:1
+
+zrodlo KOPALNIA ruda 1 16
+magazyn SKLAD 6
+magazyn MAG_WY bez_limitu
+maszyna PIEC1 piec WYTAPIANIE
+maszyna KRAJARKA1 krajarka CIECIE
+maszyna MONTAZ1 montownia MONTAZ
+
+polaczenie KOPALNIA SKLAD ruda 2 2
+polaczenie SKLAD PIEC1 ruda 2 1
+polaczenie PIEC1 KRAJARKA1 metal 1 1
+polaczenie KRAJARKA1 MONTAZ1 plytka 2 1
+polaczenie MONTAZ1 MAG_WY modul 1 1
+
+zamowienie modul 4 MAG_WY

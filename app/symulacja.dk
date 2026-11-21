@@ -1,0 +1,291 @@
+#{
+    Symulacja krok po kroku. Jednostka czasu: 1 krok (w przykładach umownie 1 minuta).
+    Kolejność obsługi w kroku t (zawsze ta sama, elementy w kolejności z konfiguracji):
+
+    1. Dostawy: przesyłki z czasem dostawy t trafiają do celu (miejsce było zarezerwowane
+       przy wysyłce, więc pojemność nigdy nie jest przekroczona).
+    2. Maszyny:
+       a) maszyna z gotowym produktem, który nie mieścił się w buforze, próbuje go oddać;
+       b) wolna maszyna rozpoczyna cykl, jeśli bufor wejściowy ma komplet surowców:
+          surowce są pobierane w całości w chwili startu;
+       c) pracująca maszyna odlicza krok; po ostatnim kroku cyklu produkt trafia do bufora
+          wyjściowego (cykl o czasie c zaczęty w kroku t kończy się w kroku t + c - 1),
+          a gdy się nie mieści, maszyna jest zablokowana do zwolnienia miejsca.
+       Bez kompletu surowców maszyna nie zaczyna cyklu (krok "głodu"); produkt nigdy nie
+       powstaje bez pobranych surowców.
+    3. Źródła wydobywają do swojego bufora najwyżej "na krok", łącznie najwyżej limit.
+    4. Transport: każde aktywne połączenie (w kolejności z konfiguracji) wysyła
+       min(przepustowość, dostępne u nadawcy, wolne miejsce u odbiorcy) sztuk; dotrą one
+       w kroku t + opóźnienie. Gotowy produkt może więc wyjechać w kroku, w którym powstał.
+    5. Zamówienie jest zrealizowane, gdy magazyn docelowy ma zamówioną ilość na koniec kroku.
+
+    Bufor maszyny mieści 2 komplety wejść i 2 komplety wyjść receptury. Gdy w kroku nic się
+    nie wydarzyło i nic nie jest w drodze, produkcja stanęła i symulacja się kończy.
+#}
+import core.containers.*;
+import app.tekst;
+import app.model;
+
+# Ile zasobu można zabrać z elementu.
+fun dostepne(f: ref model.Fabryka, e: i64, zasob: i64) -> i64 = f.elementy.at(e).wyjscie.at(zasob);
+
+fun wTransporcie(f: ref model.Fabryka, cel: i64, zasob: i64, wszystkie: bool) -> i64 = {
+    var n: i64 = 0;
+    var i: i64 = 0;
+    while (i < f.wDrodze.length()) {
+        let p = f.wDrodze.at(i).polaczenie;
+        if (f.polaczenia.at(p).cel == cel and (wszystkie or f.polaczenia.at(p).zasob == zasob)) n += f.wDrodze.at(i).ilosc;
+        i += 1;
+    }
+    return n;
+}
+
+fun zawartosc(f: ref model.Fabryka, e: i64) -> i64 = {
+    var n: i64 = 0;
+    var z: i64 = 0;
+    while (z < f.zasoby.length()) {
+        n += f.elementy.at(e).wyjscie.at(z);
+        z += 1;
+    }
+    return n;
+}
+
+# Wolne miejsce u odbiorcy, z uwzględnieniem przesyłek już w drodze.
+fun wolne(f: ref model.Fabryka, e: i64, zasob: i64) -> i64 = {
+    let rodzaj = f.elementy.at(e).rodzaj;
+    if (rodzaj == model.MAGAZYN) {
+        if (f.elementy.at(e).pojemnosc == model.BEZ_LIMITU) return 1000000000000;
+        return f.elementy.at(e).pojemnosc - zawartosc(f, e) - wTransporcie(f, e, zasob, true);
+    }
+    if (rodzaj == model.MASZYNA) {
+        let potrzeba = model.naWejsciu(f, f.elementy.at(e).receptura, zasob);
+        return model.MNOZNIK_BUFORA * potrzeba - f.elementy.at(e).wejscie.at(zasob) - wTransporcie(f, e, zasob, false);
+    }
+    return 0;
+}
+
+fun mozeStartowac(f: ref model.Fabryka, e: i64) -> bool = {
+    let r = f.elementy.at(e).receptura;
+    var i: i64 = 0;
+    while (i < f.receptury.at(r).wejscia.length()) {
+        let w = f.receptury.at(r).wejscia.at(i);
+        if (f.elementy.at(e).wejscie.at(w.zasob) < w.ilosc) return false;
+        i += 1;
+    }
+    return true;
+}
+
+fun mieszczaSieProdukty(f: ref model.Fabryka, e: i64) -> bool = {
+    let r = f.elementy.at(e).receptura;
+    var i: i64 = 0;
+    while (i < f.receptury.at(r).wyjscia.length()) {
+        let w = f.receptury.at(r).wyjscia.at(i);
+        if (f.elementy.at(e).wyjscie.at(w.zasob) + w.ilosc > model.MNOZNIK_BUFORA * w.ilosc) return false;
+        i += 1;
+    }
+    return true;
+}
+
+fun oddajProdukty(f: ref model.Fabryka, e: i64) -> () = {
+    let r = f.elementy.at(e).receptura;
+    var i: i64 = 0;
+    while (i < f.receptury.at(r).wyjscia.length()) {
+        let w = f.receptury.at(r).wyjscia.at(i);
+        f.elementy.at(e).wyjscie.at(w.zasob) += w.ilosc;
+        i += 1;
+    }
+    f.elementy.at(e).cykle += 1;
+}
+
+fun opisIlosci(f: ref model.Fabryka, lista: ref List[model.Ilosc]) -> String = {
+    var w: String;
+    var i: i64 = 0;
+    while (i < lista.length()) {
+        if (i > 0) w.append(", ");
+        w.append(f"{lista.at(i).ilosc} {model.nazwaZasobu(f, lista.at(i).zasob)}");
+        i += 1;
+    }
+    return w;
+}
+
+fun nazwa(f: ref model.Fabryka, e: i64) -> str = f.elementy.at(e).nazwa.asSlice();
+
+#{
+    Jeden krok symulacji. Gdy slad = true, do listy zdarzenia trafiają opisy tego, co się
+    stało (do polecenia "przebieg").
+#}
+fun krok(f: ref model.Fabryka, slad: bool, zdarzenia: ref List[String]) -> () = {
+    if (not f.ukonczono and not f.stoi) {
+        f.krok += 1;
+        let t = f.krok;
+        var ruch = false;
+        # 1. Dostawy.
+        var zostaja: List[model.Przesylka];
+        var i: i64 = 0;
+        while (i < f.wDrodze.length()) {
+            let p = f.wDrodze.at(i);
+            if (p.dociera == t) {
+                let odbiorca = f.polaczenia.at(p.polaczenie).cel;
+                let dostarczony = f.polaczenia.at(p.polaczenie).zasob;
+                if (f.elementy.at(odbiorca).rodzaj == model.MAGAZYN) f.elementy.at(odbiorca).wyjscie.at(dostarczony) += p.ilosc;
+                else f.elementy.at(odbiorca).wejscie.at(dostarczony) += p.ilosc;
+                ruch = true;
+                if (slad) zdarzenia.push(f"dostawa {p.ilosc} {model.nazwaZasobu(f, dostarczony)} do {nazwa(f, odbiorca)}");
+            } else {
+                zostaja.push(p);
+            }
+            i += 1;
+        }
+        f.wDrodze = move zostaja;
+        # 2. Maszyny.
+        var e: i64 = 0;
+        while (e < f.elementy.length()) {
+            if (f.elementy.at(e).rodzaj == model.MASZYNA) {
+                let r = f.elementy.at(e).receptura;
+                var pracowala = false;
+                if (f.elementy.at(e).gotowe and mieszczaSieProdukty(f, e)) {
+                    oddajProdukty(f, e);
+                    f.elementy.at(e).gotowe = false;
+                    ruch = true;
+                    if (slad) zdarzenia.push(f"{nazwa(f, e)} oddaje zalegle produkty");
+                }
+                if (not f.elementy.at(e).gotowe and f.elementy.at(e).pozostalo == 0 and mozeStartowac(f, e)) {
+                    var k: i64 = 0;
+                    while (k < f.receptury.at(r).wejscia.length()) {
+                        let w = f.receptury.at(r).wejscia.at(k);
+                        f.elementy.at(e).wejscie.at(w.zasob) -= w.ilosc;
+                        k += 1;
+                    }
+                    f.elementy.at(e).pozostalo = f.receptury.at(r).czas;
+                    ruch = true;
+                    if (slad) {
+                        let pobrane = opisIlosci(f, &f.receptury.at(r).wejscia);
+                        zdarzenia.push(f"{nazwa(f, e)} zaczyna {f.receptury.at(r).nazwa.asSlice()} (pobiera {pobrane.asSlice()}, {f.receptury.at(r).czas} kr.)");
+                    }
+                }
+                if (f.elementy.at(e).pozostalo > 0) {
+                    pracowala = true;
+                    ruch = true;
+                    f.elementy.at(e).praca += 1;
+                    f.elementy.at(e).pozostalo -= 1;
+                    if (f.elementy.at(e).pozostalo == 0) {
+                        if (mieszczaSieProdukty(f, e)) {
+                            oddajProdukty(f, e);
+                            if (slad) {
+                                let wytworzone = opisIlosci(f, &f.receptury.at(r).wyjscia);
+                                zdarzenia.push(f"{nazwa(f, e)} konczy cykl: {wytworzone.asSlice()}");
+                            }
+                        } else {
+                            f.elementy.at(e).gotowe = true;
+                            if (slad) zdarzenia.push(f"{nazwa(f, e)} konczy cykl, ale bufor wyjsciowy jest pelny - blokada");
+                        }
+                    }
+                }
+                if (not pracowala) {
+                    if (f.elementy.at(e).gotowe) f.elementy.at(e).blokada += 1;
+                    else f.elementy.at(e).glod += 1;
+                }
+            }
+            e += 1;
+        }
+        # 3. Źródła.
+        var zr: i64 = 0;
+        while (zr < f.elementy.length()) {
+            if (f.elementy.at(zr).rodzaj == model.ZRODLO) {
+                var n = f.elementy.at(zr).naKrok;
+                let zostalo = f.elementy.at(zr).limit - f.elementy.at(zr).wydano;
+                if (zostalo < n) n = zostalo;
+                if (n > 0) {
+                    let zasob = f.elementy.at(zr).zasob;
+                    f.elementy.at(zr).wyjscie.at(zasob) += n;
+                    f.elementy.at(zr).wydano += n;
+                    ruch = true;
+                    if (slad) zdarzenia.push(f"{nazwa(f, zr)} wydobywa {n} {model.nazwaZasobu(f, zasob)}");
+                }
+            }
+            zr += 1;
+        }
+        # 4. Transport.
+        var c: i64 = 0;
+        while (c < f.polaczenia.length()) {
+            if (f.polaczenia.at(c).aktywne) {
+                let z = f.polaczenia.at(c).z;
+                let cel = f.polaczenia.at(c).cel;
+                let zasob = f.polaczenia.at(c).zasob;
+                var n = f.polaczenia.at(c).przepustowosc;
+                let jest = dostepne(f, z, zasob);
+                let miejsce = wolne(f, cel, zasob);
+                if (jest < n) n = jest;
+                if (miejsce < n) n = miejsce;
+                if (n > 0) {
+                    f.elementy.at(z).wyjscie.at(zasob) -= n;
+                    var p = model.Przesylka();
+                    p.polaczenie = c;
+                    p.ilosc = n;
+                    p.dociera = t + f.polaczenia.at(c).opoznienie;
+                    f.wDrodze.push(p);
+                    f.polaczenia.at(c).przewieziono += n;
+                    ruch = true;
+                    if (slad) zdarzenia.push(f"transport {nazwa(f, z)} -> {nazwa(f, cel)}: {n} {model.nazwaZasobu(f, zasob)} (dotrze w kroku {p.dociera})");
+                }
+            }
+            c += 1;
+        }
+        # 5. Zamówienie i zatrzymanie.
+        if (f.elementy.at(f.cel).wyjscie.at(f.produkt) >= f.ilosc) {
+            f.ukonczono = true;
+            if (slad) zdarzenia.push(f"ZAMOWIENIE ZREALIZOWANE: {f.ilosc} {model.nazwaZasobu(f, f.produkt)} w {nazwa(f, f.cel)}");
+        } else if (not ruch and f.wDrodze.length() == 0) {
+            f.stoi = true;
+            if (slad) zdarzenia.push(f"nic sie nie dzieje i nic nie jest w drodze - produkcja stanela");
+        }
+    }
+}
+
+# Symulacja do zrealizowania zamówienia, zatrzymania produkcji albo limitu kroków.
+fun symuluj(f: ref model.Fabryka) -> () = {
+    var nic: List[String];
+    while (not f.ukonczono and not f.stoi and f.krok < f.maksKrokow) krok(f, false, &nic);
+}
+
+fun wyprodukowano(f: ref model.Fabryka, zasob: i64) -> i64 = {
+    var n: i64 = 0;
+    var e: i64 = 0;
+    while (e < f.elementy.length()) {
+        if (f.elementy.at(e).rodzaj == model.MASZYNA) n += f.elementy.at(e).cykle * model.naWyjsciu(f, f.elementy.at(e).receptura, zasob);
+        if (f.elementy.at(e).rodzaj == model.ZRODLO and f.elementy.at(e).zasob == zasob) n += f.elementy.at(e).wydano;
+        e += 1;
+    }
+    return n;
+}
+
+# Wszystkie sztuki zasobu: w magazynach, buforach i w drodze.
+fun wszystkieSztuki(f: ref model.Fabryka, zasob: i64) -> i64 = {
+    var n: i64 = 0;
+    var e: i64 = 0;
+    while (e < f.elementy.length()) {
+        n += f.elementy.at(e).wejscie.at(zasob) + f.elementy.at(e).wyjscie.at(zasob);
+        e += 1;
+    }
+    var i: i64 = 0;
+    while (i < f.wDrodze.length()) {
+        if (f.polaczenia.at(f.wDrodze.at(i).polaczenie).zasob == zasob) n += f.wDrodze.at(i).ilosc;
+        i += 1;
+    }
+    return n;
+}
+
+# Zużycie zasobu przez wszystkie rozpoczęte cykle maszyn.
+fun zuzyto(f: ref model.Fabryka, zasob: i64) -> i64 = {
+    var n: i64 = 0;
+    var e: i64 = 0;
+    while (e < f.elementy.length()) {
+        if (f.elementy.at(e).rodzaj == model.MASZYNA) {
+            var cykle = f.elementy.at(e).cykle;
+            if (f.elementy.at(e).pozostalo > 0 or f.elementy.at(e).gotowe) cykle += 1;
+            n += cykle * model.naWejsciu(f, f.elementy.at(e).receptura, zasob);
+        }
+        e += 1;
+    }
+    return n;
+}

@@ -1,0 +1,129 @@
+#{
+    Model fabryki: zasoby, receptury, elementy (magazyny, maszyny, źródła), stałe połączenia
+    i przesyłki w drodze. Ilości zasobów są liczbami całkowitymi (sztuki), czas w krokach.
+#}
+import core.containers.*;
+import app.tekst;
+
+const MAGAZYN: i32 = 1;
+const MASZYNA: i32 = 2;
+const ZRODLO: i32 = 3;
+
+const BEZ_LIMITU: i64 = -1;
+const MNOZNIK_BUFORA: i64 = 2;     # bufor maszyny mieści 2 komplety wejść i 2 komplety wyjść
+
+class Ilosc {
+    zasob: i64 = 0;
+    ilosc: i64 = 0;
+}
+
+class Receptura {
+    nazwa: String;
+    typ: String;              # rodzaj maszyny, która ją wykonuje
+    czas: i64 = 0;            # kroki jednego cyklu
+    wejscia: List[Ilosc];
+    wyjscia: List[Ilosc];
+}
+
+class Element {
+    rodzaj: i32 = 0;
+    nazwa: String;
+    typ: String;              # maszyna: rodzaj maszyny
+    receptura: i64 = -1;      # maszyna
+    pojemnosc: i64 = BEZ_LIMITU;   # magazyn: łączna liczba sztuk albo BEZ_LIMITU
+    zasob: i64 = -1;          # źródło: wydobywany zasób
+    naKrok: i64 = 0;          # źródło: wydajność na krok
+    limit: i64 = 0;           # źródło: łączny limit
+    wydano: i64 = 0;          # źródło: ile już wydobyło
+    wejscie: List[i64];       # maszyna: bufor wejściowy (indeks = zasób)
+    wyjscie: List[i64];       # maszyna i źródło: bufor wyjściowy; magazyn: zawartość
+    pozostalo: i64 = 0;       # maszyna: kroki do końca cyklu (0 = nie pracuje)
+    gotowe: bool = false;     # maszyna: cykl skończony, produkt czeka na miejsce w buforze
+    cykle: i64 = 0;
+    praca: i64 = 0;           # liczba kroków pracy
+    glod: i64 = 0;            # kroki bez pracy z braku surowca
+    blokada: i64 = 0;         # kroki bez pracy z braku miejsca na produkt
+}
+
+class Polaczenie {
+    z: i64 = 0;
+    cel: i64 = 0;
+    zasob: i64 = 0;
+    przepustowosc: i64 = 0;   # sztuk na krok
+    opoznienie: i64 = 1;      # kroki transportu
+    aktywne: bool = true;
+    przewieziono: i64 = 0;
+}
+
+class Przesylka {
+    polaczenie: i64 = 0;
+    ilosc: i64 = 0;
+    dociera: i64 = 0;         # numer kroku dostawy
+}
+
+class Fabryka {
+    zasoby: List[String];
+    receptury: List[Receptura];
+    elementy: List[Element];
+    polaczenia: List[Polaczenie];
+    wDrodze: List[Przesylka];
+    zapasStart: List[i64];    # początkowe zapasy w magazynach według zasobu
+    limitZrodel: List[i64];   # łączne limity źródeł według zasobu
+    produkt: i64 = -1;        # zamówienie
+    ilosc: i64 = 0;
+    cel: i64 = -1;
+    maksKrokow: i64 = 10000;
+    krok: i64 = 0;
+    ukonczono: bool = false;
+    stoi: bool = false;       # nic się nie dzieje i nic nie jest w drodze
+}
+
+fun indeksZasobu(f: ref Fabryka, nazwa: str) -> i64 = {
+    var i: i64 = 0;
+    while (i < f.zasoby.length()) {
+        if (tekst.rowne(f.zasoby.at(i).asSlice(), nazwa)) return i;
+        i += 1;
+    }
+    return -1;
+}
+
+fun indeksElementu(f: ref Fabryka, nazwa: str) -> i64 = {
+    var i: i64 = 0;
+    while (i < f.elementy.length()) {
+        if (tekst.rowne(f.elementy.at(i).nazwa.asSlice(), nazwa)) return i;
+        i += 1;
+    }
+    return -1;
+}
+
+fun indeksReceptury(f: ref Fabryka, nazwa: str) -> i64 = {
+    var i: i64 = 0;
+    while (i < f.receptury.length()) {
+        if (tekst.rowne(f.receptury.at(i).nazwa.asSlice(), nazwa)) return i;
+        i += 1;
+    }
+    return -1;
+}
+
+# Ilość zasobu potrzebna na wejściu (albo wytwarzana na wyjściu) jednego cyklu receptury.
+fun naWejsciu(f: ref Fabryka, receptura: i64, zasob: i64) -> i64 = {
+    var n: i64 = 0;
+    var i: i64 = 0;
+    while (i < f.receptury.at(receptura).wejscia.length()) {
+        if (f.receptury.at(receptura).wejscia.at(i).zasob == zasob) n += f.receptury.at(receptura).wejscia.at(i).ilosc;
+        i += 1;
+    }
+    return n;
+}
+
+fun naWyjsciu(f: ref Fabryka, receptura: i64, zasob: i64) -> i64 = {
+    var n: i64 = 0;
+    var i: i64 = 0;
+    while (i < f.receptury.at(receptura).wyjscia.length()) {
+        if (f.receptury.at(receptura).wyjscia.at(i).zasob == zasob) n += f.receptury.at(receptura).wyjscia.at(i).ilosc;
+        i += 1;
+    }
+    return n;
+}
+
+fun nazwaZasobu(f: ref Fabryka, zasob: i64) -> str = f.zasoby.at(zasob).asSlice();

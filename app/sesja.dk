@@ -1,0 +1,226 @@
+#{
+    Interfejs tekstowy DuckFactory: polecenia wiersz po wierszu (interaktywnie albo z pliku).
+    Wczytane układy są przechowywane w stanie początkowym; każda symulacja działa na kopii,
+    więc można ją powtarzać i porównywać układy przy tych samych zapasach.
+#}
+import core.containers.*;
+import app.tekst;
+import app.pliki;
+import app.model;
+import app.konfiguracja;
+import app.symulacja;
+import app.raport;
+
+class Uklad {
+    nazwa: String;
+    plik: String;
+    fabryka: model.Fabryka;   # stan początkowy (krok 0)
+}
+
+class Sesja {
+    uklady: List[Uklad];
+    koniec: bool = false;
+}
+
+class Odpowiedz {
+    ok: bool = false;
+    tekst: String;
+}
+
+fun odmowa(komunikat: str) -> Odpowiedz = {
+    var o: Odpowiedz;
+    o.tekst.append(komunikat);
+    o.tekst.append("\n");
+    return o;
+}
+
+fun pomoc() -> String = {
+    var w: String;
+    w.append("Polecenia:\n");
+    w.append("  wczytaj NAZWA plik.txt            wczytuje uklad fabryki pod nazwa (np. A, B)\n");
+    w.append("  symuluj NAZWA                     symulacja do realizacji zamowienia i raport produkcji\n");
+    w.append("  przebieg NAZWA OD DO              zdarzenia kolejnych krokow OD..DO\n");
+    w.append("  porownaj NAZWA1 NAZWA2            porownanie czasu realizacji tego samego zamowienia\n");
+    w.append("  wylacz NAZWA Z DO                 wylacza polaczenie Z -> DO (proba braku polaczenia)\n");
+    w.append("  zapas NAZWA MAGAZYN ZASOB ILOSC   ustawia zapas poczatkowy (proba braku surowca)\n");
+    w.append("  uklady, pomoc, koniec\n");
+    w.append("Wiersze zaczynajace sie od # sa komentarzami.\n");
+    return w;
+}
+
+fun indeksUkladu(s: ref Sesja, nazwa: str) -> i64 = {
+    var i: i64 = 0;
+    while (i < s.uklady.length()) {
+        if (tekst.rowne(s.uklady.at(i).nazwa.asSlice(), nazwa)) return i;
+        i += 1;
+    }
+    return -1;
+}
+
+fun listaBledow(naglowek: str, bledy: ref List[String]) -> String = {
+    var w: String;
+    w.append(naglowek);
+    w.append("\n");
+    var i: i64 = 0;
+    while (i < bledy.length()) {
+        w.append(f"  - {bledy.at(i).asSlice()}\n");
+        i += 1;
+    }
+    return w;
+}
+
+fun wczytajTekst(s: ref Sesja, nazwa: str, zrodlo: str, zawartosc: str) -> Odpowiedz = {
+    var wynik = konfiguracja.wczytaj(zawartosc);
+    if (not wynik.ok) {
+        var o: Odpowiedz;
+        o.tekst = listaBledow(f"Uklad {nazwa} odrzucony ({zrodlo}):".asSlice(), &wynik.bledy);
+        return o;
+    }
+    let i = indeksUkladu(s, nazwa);
+    if (i >= 0) {
+        s.uklady.at(i).fabryka = copy wynik.fabryka;
+        s.uklady.at(i).plik.clear();
+        s.uklady.at(i).plik.append(zrodlo);
+    } else {
+        var u: Uklad;
+        u.nazwa.append(nazwa);
+        u.plik.append(zrodlo);
+        u.fabryka = copy wynik.fabryka;
+        s.uklady.push(move u);
+    }
+    var o2: Odpowiedz;
+    o2.ok = true;
+    o2.tekst.append(f"Wczytano uklad {nazwa} z {zrodlo}: {wynik.fabryka.receptury.length()} receptur, {wynik.fabryka.elementy.length()} elementow, {wynik.fabryka.polaczenia.length()} polaczen.\n");
+    return o2;
+}
+
+fun wymagaUkladu(s: ref Sesja, nazwa: str) -> i64 = indeksUkladu(s, nazwa);
+
+fun wykonaj(s: ref Sesja, linia: str) -> Odpowiedz = {
+    let czysta = tekst.przytnij(linia);
+    var o: Odpowiedz;
+    if (czysta.length() == 0 or czysta.asSlice()[0] == '#') {
+        o.ok = true;
+        return o;
+    }
+    let czesci = tekst.slowa(czysta.asSlice());
+    let polecenie = czesci.at(0).asSlice();
+    if (tekst.rowne(polecenie, "pomoc")) {
+        o.ok = true;
+        o.tekst = pomoc();
+        return o;
+    }
+    if (tekst.rowne(polecenie, "koniec")) {
+        s.koniec = true;
+        o.ok = true;
+        return o;
+    }
+    if (tekst.rowne(polecenie, "wczytaj")) {
+        if (czesci.length() != 3) return odmowa("Uzycie: wczytaj NAZWA plik.txt");
+        let plik = pliki.wczytaj(czesci.at(2).asSlice());
+        if (not plik.ok) return odmowa(f"Blad: {plik.blad.asSlice()}".asSlice());
+        return wczytajTekst(s, czesci.at(1).asSlice(), czesci.at(2).asSlice(), plik.tresc.asSlice());
+    }
+    if (tekst.rowne(polecenie, "uklady")) {
+        o.ok = true;
+        o.tekst.append("Wczytane uklady:\n");
+        var i: i64 = 0;
+        while (i < s.uklady.length()) {
+            o.tekst.append(f"  {s.uklady.at(i).nazwa.asSlice()}: {s.uklady.at(i).plik.asSlice()}\n");
+            i += 1;
+        }
+        return o;
+    }
+    if (tekst.rowne(polecenie, "symuluj")) {
+        if (czesci.length() != 2) return odmowa("Uzycie: symuluj NAZWA");
+        let u = indeksUkladu(s, czesci.at(1).asSlice());
+        if (u < 0) return odmowa(f"Nie ma ukladu {czesci.at(1).asSlice()}; najpierw 'wczytaj'.".asSlice());
+        var f = copy s.uklady.at(u).fabryka;
+        symulacja.symuluj(&f);
+        o.ok = f.ukonczono;
+        o.tekst = raport.opisWyniku(&f, czesci.at(1).asSlice());
+        return o;
+    }
+    if (tekst.rowne(polecenie, "przebieg")) {
+        if (czesci.length() != 4) return odmowa("Uzycie: przebieg NAZWA OD DO");
+        let u = indeksUkladu(s, czesci.at(1).asSlice());
+        let od = tekst.parsujLiczbe(czesci.at(2).asSlice(), 1000000);
+        let doKroku = tekst.parsujLiczbe(czesci.at(3).asSlice(), 1000000);
+        if (u < 0) return odmowa(f"Nie ma ukladu {czesci.at(1).asSlice()}; najpierw 'wczytaj'.".asSlice());
+        if (not od.ok or not doKroku.ok or od.wartosc < 1 or doKroku.wartosc < od.wartosc) return odmowa("Blad: OD i DO to numery krokow, 1 <= OD <= DO.");
+        var f = copy s.uklady.at(u).fabryka;
+        o.ok = true;
+        o.tekst.append(f"Przebieg ukladu {czesci.at(1).asSlice()}, kroki {od.wartosc}-{doKroku.wartosc}:\n");
+        while (f.krok < doKroku.wartosc and not f.ukonczono and not f.stoi and f.krok < f.maksKrokow) {
+            var zdarzenia: List[String];
+            symulacja.krok(&f, true, &zdarzenia);
+            if (f.krok >= od.wartosc) {
+                o.tekst.append(f"krok {f.krok}:\n");
+                if (zdarzenia.length() == 0) o.tekst.append("  (bez zmian)\n");
+                var i: i64 = 0;
+                while (i < zdarzenia.length()) {
+                    o.tekst.append(f"  {zdarzenia.at(i).asSlice()}\n");
+                    i += 1;
+                }
+                let gotowe = f.elementy.at(f.cel).wyjscie.at(f.produkt);
+                o.tekst.append(f"  [{f.elementy.at(f.cel).nazwa.asSlice()}: {gotowe} z {f.ilosc} {model.nazwaZasobu(&f, f.produkt)}]\n");
+            }
+        }
+        return o;
+    }
+    if (tekst.rowne(polecenie, "porownaj")) {
+        if (czesci.length() != 3) return odmowa("Uzycie: porownaj NAZWA1 NAZWA2");
+        let ua = indeksUkladu(s, czesci.at(1).asSlice());
+        let ub = indeksUkladu(s, czesci.at(2).asSlice());
+        if (ua < 0 or ub < 0) return odmowa("Blad: oba uklady musza byc wczytane.");
+        var fa = copy s.uklady.at(ua).fabryka;
+        var fb = copy s.uklady.at(ub).fabryka;
+        symulacja.symuluj(&fa);
+        symulacja.symuluj(&fb);
+        var p = raport.porownaj(&fa, czesci.at(1).asSlice(), &fb, czesci.at(2).asSlice());
+        o.ok = p.ok;
+        o.tekst = copy p.tekst;
+        return o;
+    }
+    if (tekst.rowne(polecenie, "wylacz")) {
+        if (czesci.length() != 4) return odmowa("Uzycie: wylacz NAZWA Z DO");
+        let u = indeksUkladu(s, czesci.at(1).asSlice());
+        if (u < 0) return odmowa(f"Nie ma ukladu {czesci.at(1).asSlice()}.".asSlice());
+        let z = model.indeksElementu(&s.uklady.at(u).fabryka, czesci.at(2).asSlice());
+        let cel = model.indeksElementu(&s.uklady.at(u).fabryka, czesci.at(3).asSlice());
+        var wylaczone: i64 = 0;
+        var c: i64 = 0;
+        while (c < s.uklady.at(u).fabryka.polaczenia.length()) {
+            if (s.uklady.at(u).fabryka.polaczenia.at(c).z == z and s.uklady.at(u).fabryka.polaczenia.at(c).cel == cel) {
+                s.uklady.at(u).fabryka.polaczenia.at(c).aktywne = false;
+                wylaczone += 1;
+            }
+            c += 1;
+        }
+        if (wylaczone == 0) return odmowa(f"Blad: w ukladzie {czesci.at(1).asSlice()} nie ma polaczenia {czesci.at(2).asSlice()} -> {czesci.at(3).asSlice()}.".asSlice());
+        o.ok = true;
+        o.tekst.append(f"Wylaczono polaczenie {czesci.at(2).asSlice()} -> {czesci.at(3).asSlice()} w ukladzie {czesci.at(1).asSlice()}.\n");
+        return o;
+    }
+    if (tekst.rowne(polecenie, "zapas")) {
+        if (czesci.length() != 5) return odmowa("Uzycie: zapas NAZWA MAGAZYN ZASOB ILOSC");
+        let u = indeksUkladu(s, czesci.at(1).asSlice());
+        if (u < 0) return odmowa(f"Nie ma ukladu {czesci.at(1).asSlice()}.".asSlice());
+        let m = model.indeksElementu(&s.uklady.at(u).fabryka, czesci.at(2).asSlice());
+        let zasob = model.indeksZasobu(&s.uklady.at(u).fabryka, czesci.at(3).asSlice());
+        let ilosc = tekst.parsujLiczbe(czesci.at(4).asSlice(), 1000000000);
+        if (m < 0 or s.uklady.at(u).fabryka.elementy.at(m).rodzaj != model.MAGAZYN) return odmowa("Blad: zapas ustawia sie w istniejacym magazynie.");
+        if (zasob < 0 or not ilosc.ok) return odmowa("Blad: nieznany zasob albo niepoprawna ilosc.");
+        let poprzednio = s.uklady.at(u).fabryka.elementy.at(m).wyjscie.at(zasob);
+        let pojemnosc = s.uklady.at(u).fabryka.elementy.at(m).pojemnosc;
+        if (pojemnosc != model.BEZ_LIMITU and symulacja.zawartosc(&s.uklady.at(u).fabryka, m) - poprzednio + ilosc.wartosc > pojemnosc) {
+            return odmowa("Blad: zapas przekroczylby pojemnosc magazynu.");
+        }
+        s.uklady.at(u).fabryka.elementy.at(m).wyjscie.at(zasob) = ilosc.wartosc;
+        s.uklady.at(u).fabryka.zapasStart.at(zasob) += ilosc.wartosc - poprzednio;
+        o.ok = true;
+        o.tekst.append(f"Zapas {czesci.at(3).asSlice()} w {czesci.at(2).asSlice()} (uklad {czesci.at(1).asSlice()}): {ilosc.wartosc}.\n");
+        return o;
+    }
+    return odmowa(f"Nieznane polecenie '{polecenie}'. Wpisz 'pomoc'.".asSlice());
+}

@@ -1,0 +1,22 @@
+# Demonstracja DuckFactory (karta P03): python3 run.py --build build --workdir . < demo/demo.txt
+wczytaj A uklady/szeregowy.txt
+wczytaj B uklady/rownolegly.txt
+# Oba uklady realizuja to samo zamowienie (6 modulow) z tych samych 24 jednostek rudy.
+symuluj A
+symuluj B
+porownaj A B
+# Kolejne kroki: kiedy maszyna pobiera surowce i kiedy produkt jest dostepny.
+przebieg A 1 6
+# Przyklad z karty: z 12 rudy powstana najwyzej 3 moduly, zamowienie na 4 sie nie uda.
+wczytaj K uklady/przyklad-karty.txt
+symuluj K
+# Zrodlo z limitem, magazyn o ograniczonej pojemnosci i dluzszy transport.
+wczytaj Z uklady/kopalnia.txt
+symuluj Z
+# Brak jednego polaczenia zatrzymuje czesc produkcji.
+wylacz A KRAJARKA1 MONTAZ1
+symuluj A
+# Brak surowca: bez rudy nic nie powstaje.
+zapas B MAG_WE ruda 0
+symuluj B
+koniec
